@@ -15,7 +15,7 @@ Swoole源码学习记录
 Swoole没有采用多线程模型而是使用的多进程模型，在一定程度上减少了访问数据时加锁解锁的开销，但同时也引入了新的需求：共享内存。
 
 直接上源码吧，在Swoole中，对于ShareMemory的声明在swoole.h 464行-478行，如下：
-
+```c
     #define SW_SHM_MMAP_FILE_LEN  64
     typedef struct _swShareMemory_mmap
     {
@@ -31,7 +31,7 @@ Swoole没有采用多线程模型而是使用的多进程模型，在一定程�
     int swShareMemory_mmap_free(swShareMemory *object);
     void *swShareMemory_sysv_create(swShareMemory *object, int size, int key);
     int swShareMemory_sysv_free(swShareMemory *object, int rm);
-
+```
 这里，Rango声明了一个结构体swShareMemory表示共享内存的结构。在内存中，一个完整的swShareMemory存储形式如下：
 
 | swShareMemory  | mem |
@@ -46,7 +46,7 @@ int shmid为shm系列函数创建的共享内存的id（类似于fd）。
 接下来看对应的四个处理函数，从名字上可以区分，mmap代表使用内存映射文件的共享内存，sysv代表使用shm系列函数的共享内存。这四个函数的实现写在ShareMemory.c文件中。这里重点解析 swShareMemory_mmap_create 方法和swShareMemory_sysv_create 方法。
 
 下面贴上swShareMemory_mmap_create的核心代码：
-
+```c
     #ifdef MAP_ANONYMOUS
         flag |= MAP_ANONYMOUS;
     #else
@@ -62,10 +62,11 @@ int shmid为shm系列函数创建的共享内存的id（类似于fd）。
         object->tmpfd = tmpfd;
     #endif
         mem = mmap(NULL, size, PROT_READ | PROT_WRITE, flag, tmpfd, 0);
-
+```
 先解释一下 MAP_ANONYMOUS 宏，该宏定义在 mman-linux.h 内，定义如下：
-
+```c
     #  define MAP_ANONYMOUS 0x20     /* Don't use a file.  */
+```
 使用这个宏代表使用mmap生成的映射区不与任何文件关联。我的理解是：此处创建一个仅存在与内存中虚拟文件，用来存放需要共享的内容。
 
 其次解释 /dev/zero 。熟悉Linux的应该都知道 /dev/zero 和 /de/null , 这是Linux系统中的两个特殊文件，/dev/zero的特性是，所有写入该文件的数据都会消失，如果从该文件中读取内容，只能读取到连续的‘\0’。
@@ -74,7 +75,7 @@ int shmid为shm系列函数创建的共享内存的id（类似于fd）。
     如果定义了 MAP_ANONYMOUS 宏，则添加进flag中。否则，判定mapfile是否为空，如果为空，则指定mapfile为/dev/zero ，然后打开文件，将描述符赋值给tmpfd。最后，通过mmap打开大小为size的映射内存，指定内存可读可写，并将内存地址赋值给mem。
  
 swShareMemory_sysv_create的核心源码如下：
-
+```c
     if (key == 0)
     {
         key = IPC_PRIVATE;
@@ -97,8 +98,8 @@ swShareMemory_sysv_create的核心源码如下：
         object->mem = mem;
         return mem;
     }
+```
 源码解释：
-
 如果key 为0，则表示需要创建新的共享内存，则将key赋值为IPC_PRIVATE 宏。然后，调用shmget方法，如果key为IPC_PRIVATE，则创建一个大小为size的可读可写的共享内存，并获取到共享内存标识符shmid，否则获取到IPC值为key的共享内存标识符shmid。接着，调用shmat方法获取到shmid对应的共享内存首地址，并赋值给mem。
 
 两个free方法则是分别调用munmap方法和shmctl方法释放内存，不再贴上源码。
