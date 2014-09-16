@@ -32,7 +32,7 @@ RingBuffer的创建函数为swRingBuffer_new，其声明在swoole.h文件的514 
      * RingBuffer, In order for malloc / free
      */
     swMemoryPool *swRingBuffer_new(size_t size, uint8_t shared);
-```c
+```
 该函数的具体定义在RingBuffer.c中，创建过程与FixedPool基本类似，就不再额外分析，大家自行阅读源码即可。
 
 和FixedPool类似，RingBuffer也拥有4个函数用于操作内存池，其函数声明如下：
@@ -74,7 +74,7 @@ RingBuffer的创建函数为swRingBuffer_new，其声明在swoole.h文件的514 
 源码解释：每一次循环，都会获取当前collect_offset指向的地址代表的内存块，并获取其swRingBuffer_head结构，如果该内存块已经被free，则将collect_offset标记后移该内存块的长度，回收该内存。如果发现collect_offset超出了内存池大小，则将collect_offset移到内存池头部。
 
 alloc函数太长，在此不贴出源码，只写出伪代码供分析：
-```c
+
     start_alloc:
     if( alloc_offset < collect_offset ) // 起始地址在终止地址左侧
     {
@@ -107,5 +107,5 @@ alloc函数太长，在此不贴出源码，只写出伪代码供分析：
     do_alloc:
     实际分配内存块并设置属性，移动alloc_offset标记
     如果free_n大于0，则回收内存。
-```
+
 最后是MemoryGlobal。MemoryGlobal是一个比较特殊的内存池。说实话我没有看懂它的作用，所以我决定先暂时跳过MemoryGlobal，等了解其具体使用场景时再来分析这一块。
