@@ -1,7 +1,7 @@
 Swoole源码学习记录
 ===================
 -------------
-##Swoole版本：1.7.4-stable
+##Swoole版本：1.7.5-stable
 -------------
 Reactor模块可以说是Swoole中最核心的模块之一，正是这些reactor模型为swoole提供了异步操作的基础。Swoole中根据不同的内核函数，提供了四种Reactor封装，ReactorEpoll，ReactorKqueue，ReactorPoll和ReactorSelect。同时，Swoole通过结构体swReactor封装了对于reactor的操作函数和基本属性。本章，我将分析swReactor以及四种Reactor模型中的ReactorEpoll，并回顾一下epoll的相关知识。
 

@@ -1,7 +1,7 @@
 Swoole源码学习记录
 ===================
 -------------
-##Swoole版本：1.7.4-stable
+##Swoole版本：1.7.5-stable
 -------------
 本章将分析FactoryProcess.c中剩下的函数，这些函数用于操作worker、manager以及writer。这些函数提供了最核心的进程创建、管理等功能，是Swoole的master-worker结构的基石。
 

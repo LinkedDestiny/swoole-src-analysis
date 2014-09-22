@@ -11,10 +11,10 @@ Lancelot（李丹阳） from **LinkedDestiny**（**牵机工作室**）
 simonarthur2012@gmail.com
 
 ###更新计划
- - 第十一章 Worker，Connection和ReactorProcess 
- - 第十二章 Server模块详解（上）   
- - 第十三章 Server模块详解（下） 
- - 第十四章 进程池和线程池 
+ - 第十一章 Worker，Connection 
+ - 第十二章 ProcessPool和ReactorProcess
+ - 第十三章 Server模块详解（上）
+ - 第十四章 Server模块详解（下）
  - 第十五章 （补）Core核心模块
  - 第十六章 MemoryGlobal全局内存池
  - 第十七章 swoole.c详解（上）

@@ -1,7 +1,7 @@
 Swoole源码学习记录
 ===================
 -------------
-##Swoole版本：1.7.4-stable
+##Swoole版本：1.7.5-stable
 -------------
 Factory这个命名让我一度认为这是一个工厂模型……这个工厂实际上并不负责生产实例，而是根据类型的不同执行两项任务：Factory实现的功能是一个任务中心，一个task请求进入Factory，会进过dispatch分配、onTask处理、onFinish交付结果一系列流程；FactoryProcess用于管理manager和worker进程，也有对单独的writer线程的管理。
 （PS：Swoole源码中有FactoryThread模块，该模块是一个多线程模型，根据开发者Rango韩少的解释，因为PHP不支持多线程，所以无法使用这个模块，因此该模块被废弃了。而实际上，FactoryThread比FactoryProcess要更简洁……）
