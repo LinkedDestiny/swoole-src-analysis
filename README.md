@@ -12,7 +12,7 @@ simonarthur2012@gmail.com
 
 ###更新计划
  - 第十一章 Worker，Connection 
- - 第十二章 ProcessPool和ReactorProcess
+ - 第十二章 ReactorThread
  - 第十三章 Server模块详解（上）
  - 第十四章 Server模块详解（下）
  - 第十五章 （补）Core核心模块
