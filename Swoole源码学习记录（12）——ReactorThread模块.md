@@ -217,3 +217,269 @@ int swReactorThread_send2worker(void *data, int len, uint16_t target_worker_id);
     swTraceLog(SW_TRACE_EVENT, "send-data. fd=%d|reactor_id=%d", fd, reactor_id);
     swReactor *reactor = &(serv->reactor_threads[reactor_id].reactor);
 ```
+源码解释：如果不是直传，则需要现将数据放入缓存。首先创建connection的out_buffer输出缓存，如果发送数据长度为0，则指定缓存的trunk类型为**SW_TRUNK_CLOSE**（关闭连接），如果发送数据的类型为sendfile，则调用**swConnection_sendfile**函数，否则调用**swBuffer_append**函数将发送数据加入缓存中。最后，在reactor中设置fd为可写状态。
+
+swReactorThread_send2worker函数在此不再贴源码分析。基本思路就是消息队列模式就扔队列不是消息队列模式就扔缓存或者直接扔管道……应该都看得懂了。
+
+这里直接上数量最多的回调函数的分析。这几个回调式用于处理接收数据的，从名字上大家基本能看出，Swoole提供的一些特性比如包长检测、eof检测还有UDP的报文接收都是通过这些不同的回调来实现的。
+
+首先来看**swReactorThread_onReceive_no_buffer**函数，这个是最基本的接收函数，没有缓存，没有检测，收到多少数据就发给worker多少数据。下面上核心源码：
+```c
+#ifdef SW_USE_EPOLLET
+    n = swRead(event->fd, task.data.data, SW_BUFFER_SIZE);
+#else
+    //非ET模式会持续通知
+    n = swConnection_recv(conn, task.data.data, SW_BUFFER_SIZE, 0);
+#endif
+
+    if (n < 0)
+    {
+        switch (swConnection_error(errno))
+        {
+        case SW_ERROR:
+            swWarn("recv from connection[fd=%d] failed. Error: %s[%d]", event->fd, strerror(errno), errno);
+            return SW_OK;
+        case SW_CLOSE:
+            goto close_fd;
+        default:
+            return SW_OK;
+        }
+    }
+    //需要检测errno来区分是EAGAIN还是ECONNRESET
+    else if (n == 0)
+    {
+        close_fd:
+        swTrace("Close Event.FD=%d|From=%d|errno=%d", event->fd, event->from_id, errno);
+        swServer_connection_close(serv, event->fd, 1);
+        /**
+         * skip EPOLLERR
+         */
+        event->fd = 0;
+        return SW_OK;
+    }
+```
+源码解释：如果使用epoll的ET模式，则调用**swRead**函数直接从fd中读取数据；否则，在非ET模式下，调用**swConnection_recv**函数接收数据。如果接收数据失败，则根据errno执行对应的操作，如果接收数据为0，需要关闭连接，调用**swServer_connection_close**函数关闭fd。
+```c
+        conn->last_time =  SwooleGS->now;
+
+        //heartbeat ping package
+        if (serv->heartbeat_ping_length == n)
+        {
+            if (serv->heartbeat_pong_length > 0)
+            {
+                send(event->fd, serv->heartbeat_pong, serv->heartbeat_pong_length, 0);
+            }
+            return SW_OK;
+        }
+
+        task.data.info.fd = event->fd;
+        task.data.info.from_id = event->from_id;
+        task.data.info.len = n;
+
+#ifdef SW_USE_RINGBUFFER
+
+        uint16_t target_worker_id = swServer_worker_schedule(serv, conn->fd);
+        swPackage package;
+
+        package.length = task.data.info.len;
+        package.data = swReactorThread_alloc(&serv->reactor_threads[SwooleTG.id], package.length);
+        task.data.info.type = SW_EVENT_PACKAGE;
+
+        memcpy(package.data, task.data.data, task.data.info.len);
+        task.data.info.len = sizeof(package);
+        task.target_worker_id = target_worker_id;
+        memcpy(task.data.data, &package, sizeof(package));
+
+#else
+        task.data.info.type = SW_EVENT_TCP;
+        task.target_worker_id = -1;
+#endif
+
+        //dispatch to worker process
+        ret = factory->dispatch(factory, &task);
+
+#ifdef SW_USE_EPOLLET
+        //缓存区还有数据没读完，继续读，EPOLL的ET模式
+        if (sw_errno == EAGAIN)
+        {
+            swWarn("sw_errno == EAGAIN");
+            ret = swReactorThread_onReceive_no_buffer(reactor, event);
+        }
+#endif
+```
+源码解释：首先更新最近收包的时间。随后，检测是否是心跳包，如果接收长度等于心跳包的长度并且指定了发送心跳回应，则发送心跳包并返回。如果不是心跳包，则设置接收数据的fd、reactor_id以及长度。如果指定使用了RingBuffer，则需要将数据封装到swPackage中然后放进ReactorThread的input_buffer中。随后调用factory的**dispatch**方法将数据投递到对应的worker中。最后，如果是LT模式，并且缓存区的数据还没读完，则继续调用**swReactorThread_onReceive_no_buffer**函数读取数据。
+
+接下来是**swReactorThread_onReceive_buffer_check_length**函数，该函数用于接收开启了包长检测的数据包。包长检测是Swoole用于支持固定包头+包体的自定义协议的特性，当然有不少小伙伴不理解怎么使用这个特性……下面上核心源码：
+```c
+        //new package
+        if (conn->object == NULL)
+        {
+            do_parse_package:
+            do
+            {
+                package_total_length = swReactorThread_get_package_length(serv, (void *)tmp_ptr, (uint32_t) tmp_n);
+
+                //Invalid package, close connection
+                if (package_total_length < 0)
+                {
+                    goto close_fd;
+                }
+                //no package_length
+                else if(package_total_length == 0)
+                {
+                    char recv_buf_again[SW_BUFFER_SIZE];
+                    memcpy(recv_buf_again, (void *) tmp_ptr, (uint32_t) tmp_n);
+                    do
+                    {
+                        //前tmp_n个字节存放不完整包头
+                        n = recv(event->fd, (void *)recv_buf_again + tmp_n, SW_BUFFER_SIZE, 0);
+                        try_count ++;
+
+                        //连续5次尝试补齐包头,认定为恶意请求
+                        if (try_count > 5)
+                        {
+                            swWarn("No package head. Close connection.");
+                            goto close_fd;
+                        }
+                    }
+                    while(n < 0 && errno == EINTR);
+
+                    if (n == 0)
+                    {
+                        goto close_fd;
+                    }
+                    tmp_ptr = recv_buf_again;
+                    tmp_n = tmp_n + n;
+
+                    goto do_parse_package;
+                }
+                //complete package
+                if (package_total_length <= tmp_n)
+                {
+                    tmp_package.size = package_total_length;
+                    tmp_package.length = package_total_length;
+                    tmp_package.str = (void *) tmp_ptr;
+
+                    //swoole_dump_bin(buffer.str, 's', buffer.length);
+                    swReactorThread_send_string_buffer(swServer_get_thread(serv, SwooleTG.id), conn, &tmp_package);
+
+                    tmp_ptr += package_total_length;
+                    tmp_n -= package_total_length;
+                    continue;
+                }
+                //wait more data
+                else
+                {
+                    if (package_total_length >= serv->package_max_length)
+                    {
+                        swWarn("Package length more than the maximum size[%d], Close connection.", serv->package_max_length);
+                        goto close_fd;
+                    }
+                    package = swString_new(package_total_length);
+                    if (package == NULL)
+                    {
+                        return SW_ERR;
+                    }
+                    memcpy(package->str, (void *)tmp_ptr, (uint32_t) tmp_n);
+                    package->length += tmp_n;
+                    conn->object = (void *) package;
+                    break;
+                }
+            }
+            while(tmp_n > 0);
+            return SW_OK;
+        }
+```
+源码解释：如果connection连接中没有缓存数据，则判定为新的数据包，进入接收循环。在接收循环中，首先从数据缓存中尝试获取包体的长度（这个长度存在包头中），如果长度小于0，说明这个数据包不合法，丢弃并关闭连接；如果长度等于0，说明包头还没接收完整，继续接收数据，如果连续5次补全包头失败，则认定为恶意请求，关闭连接；如果长度大于0并且已经接收的数据长度超过或等于包体长度，则说明已经收到一个完整的数据包，通过**swReactorThread_send_string_buffer**函数将数据包放入缓存；如果已接收数据长度小于包体长度，则将不完整的数据包放入connection的object域，等待下一批数据。
+```c
+        else
+        {
+            package = conn->object;
+            //swTraceLog(40, "wait_data, size=%d, length=%d", buffer->size, buffer->length);
+
+            /**
+             * Also on the require_n byte data is complete.
+             */
+            int require_n = package->size - package->length;
+
+            /**
+             * Data is not complete, continue to wait
+             */
+            if (require_n > n)
+            {
+                memcpy(package->str + package->length, recv_buf, n);
+                package->length += n;
+                return SW_OK;
+            }
+            else
+            {
+                memcpy(package->str + package->length, recv_buf, require_n);
+                package->length += require_n;
+                swReactorThread_send_string_buffer(swServer_get_thread(serv, SwooleTG.id), conn, package);
+                swString_free((swString *) package);
+                conn->object = NULL;
+
+                /**
+                 * Still have the data, to parse.
+                 */
+                if (n - require_n > 0)
+                {
+                    tmp_n = n - require_n;
+                    tmp_ptr = recv_buf + require_n;
+                    goto do_parse_package;
+                }
+            }
+        }
+```
+源码解释：如果connecton的object已经存有数据，则先判断这个数据包还剩下多少个字节未接受，并用当前接收的数据补全数据包，如果数据不够，则继续等待下一批数据；如果数据够，则补全数据包并将数据包发送到缓存中，并清空connection的object域。如果在补全数据包后仍有剩余数据，则开始下一次数据包的解析。
+
+接下来分析**swReactorThread_onReceive_buffer_check_eof**函数。这个函数用于检测用户定义的数据包的分割符，用于解决TCP长连接发送数据的粘包问题，保证onReceive回调每次拿到的是一个完整的数据包。下面是核心源码：
+```c        
+//读满buffer了,可能还有数据
+ if ((buffer->trunk_size - trunk->length) == n)
+ {
+     recv_again = SW_TRUE;
+ }
+
+ trunk->length += n;
+ buffer->length += n;
+
+ //over max length, will discard
+ //TODO write to tmp file.
+ if (buffer->length > serv->package_max_length)
+ {
+     swWarn("Package is too big. package_length=%d", buffer->length);
+     goto close_fd;
+ }
+
+//        printf("buffer[len=%d][n=%d]-----------------\n", trunk->length, n);
+ //((char *)trunk->data)[trunk->length] = 0; //for printf
+//        printf("buffer-----------------: %s|fd=%d|len=%d\n", (char *) trunk->data, event->fd, trunk->length);
+
+ //EOF_Check
+ isEOF = memcmp(trunk->store.ptr + trunk->length - serv->package_eof_len, serv->package_eof, serv->package_eof_len);
+//        printf("buffer ok. EOF=%s|Len=%d|RecvEOF=%s|isEOF=%d\n", serv->package_eof, serv->package_eof_len, (char *)trunk->data + trunk->length - serv->package_eof_len, isEOF);
+
+ //received EOF, will send package to worker
+ if (isEOF == 0)
+ {
+     swReactorThread_send_in_buffer(swServer_get_thread(serv, SwooleTG.id), conn);
+     return SW_OK;
+ }
+ else if (recv_again)
+ {
+     trunk = swBuffer_new_trunk(buffer, SW_TRUNK_DATA, buffer->trunk_size);
+     if (trunk)
+     {
+         goto recv_data;
+     }
+ }
+```
+源码解释：这里使用了connection的in_buffer输入缓存。首先判定trunk的剩余空间，如果trunk已经满了，此时可能还有数据，则需要新开一个trunk接收数据，因此设定recv_again标签为true。随后判定已经接收的数据长度是否超过了最大包长，如果超过，则丢弃数据包（这里可以看到TODO标签，Rango将在后期把超过包长的数据写入tmp文件中）。随后判定EOF，将数据末尾的长度为eof_len的字符串和指定的eof字符串对比，如果相等，则将数据包发送到缓存区，如果不相等，而recv_again标签为true，则新开trunk用于接收数据。
+
+这里需要说明，Rango只是简单判定了数据包末尾是否为eof，而不是在已经接收到的字符串中去匹配eof，因此并不能很准确的根据eof来拆分数据包。所以各位如果希望能准确解决粘包问题，还是使用固定包头+包体这种协议格式较好。
+
+剩下的几个回调函数都较为简单，有兴趣的读者可以根据之前的分析自己尝试解读一下这几个函数。
+
+至此，ReactorThread模块已全部解析完成。可以看出，ReactorThread模块主要在处理连接接收到的数据，并把这些数据投递到对应的缓存中交由Worker去处理。因此可以理出一个基本的结构：
+Reactor响应fd请求->ReactorThread接收数据并放入缓存->ReactorFactory将数据从缓存取出发送给Worker->Worker处理数据。
