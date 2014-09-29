@@ -16,7 +16,7 @@ typedef struct _swReactorThread
     int c_udp_fd;
 } swReactorThread;
 ```
-// TODO
+其中thread_id为ReactorThread的id，udp_addrs和c_udp_fd专门用于处理udp请求，buffer_input为RingBuffer，用于开启了RingBuffer选项的处理，buffer_pipe用于存放来自管道的数据
 
 
 另一个结构体用来封装需要传递给Thread的参数，其声明在swoole.h的**575 - 579**行，如下：
